@@ -42,9 +42,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Ensure upload directory exists before mounting
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# Ensure upload directory exists and mount static files
+# On Vercel (read-only fs) makedirs may still fail for non-/tmp paths —
+# catch it and fall back to /tmp/uploads so the app always starts.
+try:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+except OSError:
+    UPLOAD_DIR = "/tmp/uploads"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+try:
+    app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+except Exception:
+    pass  # Static files unavailable on this environment (serverless)
 
 # Include main router
 app.include_router(main_router, prefix="/api")

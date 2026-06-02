@@ -7,7 +7,12 @@ load_dotenv()
 # Basic App Configuration
 # =========================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./recapra.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV") or "VERCEL" in os.environ:
+        DATABASE_URL = "sqlite:////tmp/recapra.db"
+    else:
+        DATABASE_URL = "sqlite:///./recapra.db"
 
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
@@ -43,7 +48,8 @@ IS_VERCEL = os.getenv("VERCEL") == "1"
 # Vercel allows writing only inside /tmp.
 # Files stored in /tmp are temporary and not permanent.
 
-if IS_VERCEL:
+# Try UPLOAD_DIR path selection
+if os.getenv("VERCEL") or os.getenv("VERCEL_ENV") or "VERCEL" in os.environ or IS_VERCEL:
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", "/tmp/uploads")
 else:
     UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
@@ -55,10 +61,21 @@ PORTFOLIOS_DIR = os.path.join(UPLOAD_DIR, "portfolios")
 COMPANY_DOCS_DIR = os.path.join(UPLOAD_DIR, "company_docs")
 
 
-# Safely create upload folders
-# This fixes the Vercel read-only filesystem crash.
-for folder in [RESUMES_DIR, PORTFOLIOS_DIR, COMPANY_DOCS_DIR]:
-    os.makedirs(folder, exist_ok=True)
+# Safely create upload folders with automatic read-only filesystem fallback
+try:
+    for folder in [RESUMES_DIR, PORTFOLIOS_DIR, COMPANY_DOCS_DIR]:
+        os.makedirs(folder, exist_ok=True)
+except OSError as e:
+    # If read-only filesystem (Errno 30), fallback to /tmp/uploads
+    if e.errno == 30 or "Read-only" in str(e):
+        UPLOAD_DIR = "/tmp/uploads"
+        RESUMES_DIR = os.path.join(UPLOAD_DIR, "resumes")
+        PORTFOLIOS_DIR = os.path.join(UPLOAD_DIR, "portfolios")
+        COMPANY_DOCS_DIR = os.path.join(UPLOAD_DIR, "company_docs")
+        for folder in [RESUMES_DIR, PORTFOLIOS_DIR, COMPANY_DOCS_DIR]:
+            os.makedirs(folder, exist_ok=True)
+    else:
+        raise
 
 
 # =========================

@@ -1,7 +1,8 @@
 import os
 import uuid
 from fastapi import UploadFile, HTTPException, status
-from config import UPLOAD_DIR, RESUMES_DIR, PORTFOLIOS_DIR, COMPANY_DOCS_DIR
+import config
+from config import UPLOAD_DIR
 
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 
@@ -40,13 +41,14 @@ def validate_and_save_file(file: UploadFile, category: str) -> dict:
             detail="File size exceeds maximum limit of 5 MB."
         )
         
-    # Determine destination folder
+    # Determine destination folder using live config values
+    # (config.RESUMES_DIR etc. reflect the /tmp fallback if triggered at startup)
     if category == "resume":
-        dest_dir = RESUMES_DIR
+        dest_dir = config.RESUMES_DIR
     elif category == "portfolio":
-        dest_dir = PORTFOLIOS_DIR
+        dest_dir = config.PORTFOLIOS_DIR
     else:
-        dest_dir = COMPANY_DOCS_DIR
+        dest_dir = config.COMPANY_DOCS_DIR
         
     # Generate unique filename
     unique_filename = f"{uuid.uuid4()}{ext}"
@@ -69,7 +71,15 @@ def validate_and_save_file(file: UploadFile, category: str) -> dict:
 def delete_file(relative_path: str):
     if not relative_path:
         return
-    full_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", relative_path))
+    # Build full path anchored to the live UPLOAD_DIR (which may be /tmp/uploads on Vercel)
+    # relative_path is like "uploads/resumes/uuid.pdf" — strip the leading "uploads/" prefix
+    # so we join correctly regardless of environment.
+    base = config.UPLOAD_DIR
+    # Strip leading "uploads/" prefix if present so path resolves under UPLOAD_DIR
+    stripped = relative_path.lstrip("/")
+    if stripped.startswith("uploads/"):
+        stripped = stripped[len("uploads/"):]
+    full_path = os.path.join(base, stripped)
     if os.path.exists(full_path):
         try:
             os.remove(full_path)
