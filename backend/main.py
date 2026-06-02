@@ -16,23 +16,32 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS setup supporting dynamic frontend origins
+# =========================
+# CORS Configuration
+# =========================
+
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-cors_origins = os.getenv("CORS_ORIGINS")
+cors_origins = os.getenv("CORS_ORIGINS", "")
+
+default_origins = [
+    frontend_url,
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "https://recapra.vercel.app",
+]
 
 if cors_origins:
-    origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
-else:
-    origins = [
-        frontend_url,
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000"
+    env_origins = [
+        origin.strip()
+        for origin in cors_origins.split(",")
+        if origin.strip()
     ]
+else:
+    env_origins = []
 
-# Remove duplicates while keeping list format
-origins = list(set(origins))
+origins = list(dict.fromkeys(default_origins + env_origins))
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,23 +51,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Ensure upload directory exists and mount static files
-# On Vercel (read-only fs) makedirs may still fail for non-/tmp paths —
-# catch it and fall back to /tmp/uploads so the app always starts.
-try:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-except OSError:
-    UPLOAD_DIR = "/tmp/uploads"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+# =========================
+# Static Uploads Mount
+# =========================
 
 try:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-except Exception:
-    pass  # Static files unavailable on this environment (serverless)
+except Exception as e:
+    print(f"Uploads directory could not be mounted: {e}")
 
-# Include main router
+# =========================
+# Routes
+# =========================
+
 app.include_router(main_router, prefix="/api")
 
 @app.get("/")
 def root():
-    return {"message": "Recapra API is running"}
+    return {
+        "message": "Recapra API is running",
+        "allowed_origins": origins
+    }
