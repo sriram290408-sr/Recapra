@@ -520,9 +520,20 @@ const CandidateDocuments = () => {
   const [latestReportOpen, setLatestReportOpen] = useState(true);
   const [expandedPastId, setExpandedPastId] = useState(null);
 
+  // AI Resume Improvement state
+  const [profile, setProfile] = useState(null);
+  const [targetRole, setTargetRole] = useState("");
+  const [improving, setImproving] = useState(false);
+  const [improvedResult, setImprovedResult] = useState(null);
+  const [accepting, setAccepting] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [atsComparison, setAtsComparison] = useState(null);
+
   // Derived
   const resume = documents.find((d) => d.document_type === "resume");
   const portfolio = documents.find((d) => d.document_type === "portfolio");
+
+  const showToast = (type, msg) => { setToastType(type); setToastMsg(msg); };
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -558,16 +569,170 @@ const CandidateDocuments = () => {
     } catch { /* silent */ }
   }, [currentReport]);
 
+  const fetchProfile = useCallback(async () => {
+    try {
+      const r = await axiosInstance.get("/candidate/profile");
+      setProfile(r.data);
+      if (r.data?.target_job_role) {
+        setTargetRole(r.data.target_job_role);
+      }
+    } catch { /* silent */ }
+  }, []);
+
+  const fetchLatestImprovement = useCallback(async () => {
+    try {
+      const r = await axiosInstance.get("/candidate/resume/improved");
+      if (r.data) {
+        setImprovedResult(r.data);
+        if (r.data.status === "accepted" && r.data.improved_ats_score > 0) {
+          setAtsComparison({
+            original_ats_score: r.data.original_ats_score,
+            ats_score_after_ai_improvement: r.data.improved_ats_score,
+            score_difference: r.data.score_difference,
+            ats_report: null
+          });
+        }
+      }
+    } catch { /* silent */ }
+  }, []);
+
   useEffect(() => {
     const init = async () => {
       setLoading(true);
-      await Promise.all([fetchDocuments(), fetchTemplates(), fetchCompanyJobs(), fetchPastReports()]);
+      await Promise.all([
+        fetchDocuments(),
+        fetchTemplates(),
+        fetchCompanyJobs(),
+        fetchPastReports(),
+        fetchProfile(),
+        fetchLatestImprovement()
+      ]);
       setLoading(false);
     };
     init();
   }, []);
 
-  const showToast = (type, msg) => { setToastType(type); setToastMsg(msg); };
+  const handleImproveResume = async () => {
+    if (!resume) {
+      showToast("error", "Please upload a resume first.");
+      return;
+    }
+    if (!targetRole.trim()) {
+      showToast("error", "Please enter a target job role.");
+      return;
+    }
+    setImproving(true);
+    setAtsComparison(null);
+    try {
+      const r = await axiosInstance.post("/candidate/resume/improve-ai", {
+        target_role: targetRole
+      });
+      setImprovedResult(r.data);
+      showToast("success", "AI Resume improvement complete! Preview below.");
+    } catch (err) {
+      showToast("error", err.response?.data?.detail || "AI improvement failed.");
+    } finally {
+      setImproving(false);
+    }
+  };
+
+  const handleAcceptSuggestions = async () => {
+    setAccepting(true);
+    try {
+      const r = await axiosInstance.post("/candidate/resume/accept-improved");
+      showToast("success", r.data.message || "Suggestions accepted! Running ATS recheck...");
+      const atsRes = await axiosInstance.post("/candidate/resume/run-ats-after-improvement");
+      setAtsComparison(atsRes.data);
+      showToast("success", "ATS recheck complete! View before/after score card.");
+      await fetchDocuments();
+      await fetchPastReports();
+      await fetchLatestImprovement();
+    } catch (err) {
+      showToast("error", err.response?.data?.detail || "Failed to accept suggestions.");
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const handleRejectSuggestions = async () => {
+    setRejecting(true);
+    try {
+      await axiosInstance.post("/candidate/resume/reject-improved");
+      setImprovedResult(null);
+      setAtsComparison(null);
+      showToast("success", "Suggestions rejected.");
+    } catch (err) {
+      showToast("error", err.response?.data?.detail || "Failed to reject suggestions.");
+    } finally {
+      setRejecting(false);
+    }
+  };
+
+  const handleDownloadDraft = () => {
+    if (!improvedResult?.improved_resume_text) return;
+    const resText = improvedResult.improved_resume_text;
+    
+    let text = `${resText.candidate_name}\n`;
+    text += `${resText.headline}\n`;
+    text += `${resText.contact}\n\n`;
+    text += `PROFESSIONAL SUMMARY\n${resText.summary}\n\n`;
+    
+    text += `TECHNICAL SKILLS\n`;
+    if (resText.skills?.frontend?.length) text += `Frontend: ${resText.skills.frontend.join(", ")}\n`;
+    if (resText.skills?.backend?.length) text += `Backend: ${resText.skills.backend.join(", ")}\n`;
+    if (resText.skills?.database?.length) text += `Database: ${resText.skills.database.join(", ")}\n`;
+    if (resText.skills?.tools?.length) text += `Tools: ${resText.skills.tools.join(", ")}\n`;
+    if (resText.skills?.other?.length) text += `Other: ${resText.skills.other.join(", ")}\n`;
+    text += `\n`;
+    
+    text += `PROJECTS\n`;
+    resText.projects?.forEach(p => {
+      text += `${p.title}\n`;
+      p.description?.forEach(d => {
+        text += `- ${d}\n`;
+      });
+      text += `Technologies: ${p.tech_stack}\n\n`;
+    });
+    
+    text += `EXPERIENCE / TRAINING\n`;
+    resText.experience?.forEach(exp => {
+      text += `${exp.job_title} - ${exp.company_name}\n`;
+      exp.wording?.forEach(w => {
+        text += `- ${w}\n`;
+      });
+      text += `\n`;
+    });
+    
+    text += `EDUCATION\n`;
+    resText.education?.forEach(edu => {
+      text += `${edu.degree} - ${edu.institution} (${edu.year})\n`;
+    });
+    text += `\n`;
+    
+    if (resText.certifications?.length) {
+      text += `CERTIFICATIONS\n`;
+      resText.certifications.forEach(c => {
+        text += `- ${c}\n`;
+      });
+      text += `\n`;
+    }
+    
+    if (resText.additional_strengths?.length) {
+      text += `ADDITIONAL STRENGTHS\n`;
+      resText.additional_strengths.forEach(s => {
+        text += `- ${s}\n`;
+      });
+      text += `\n`;
+    }
+    
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${resText.candidate_name.replace(/\s+/g, "_")}_AI_Improved_Resume.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleDocSuccess = async (msg) => {
     showToast("success", msg);
@@ -689,6 +854,298 @@ const CandidateDocuments = () => {
               </p>
               <UploadPanel docType="portfolio" label="Portfolio" onSuccess={handleDocSuccess} existing={!!portfolio} />
             </div>
+          </div>
+        </div>
+
+        {/* ── AI Resume Optimizer ── */}
+        <div className="rounded-2xl border border-indigo-200 bg-white shadow-sm overflow-hidden">
+          <div className="border-b border-indigo-100 bg-gradient-to-r from-indigo-50 to-white px-5 py-4 sm:px-6">
+            <h3 className="flex items-center gap-2 text-base font-bold text-slate-900">
+              <Zap size={18} className="text-indigo-500 animate-pulse" /> AI Resume Optimizer (Hugging Face)
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">
+              Transform your resume into a professionally structured, ATS-compliant format. Re-evaluate your score automatically after accepting.
+            </p>
+          </div>
+
+          <div className="p-5 sm:p-6 space-y-5">
+            {!resume ? (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+                <AlertTriangle size={15} /> Upload your resume first to enable AI resume improvement.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Role input and Run Button */}
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <div className="flex-1">
+                    <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-500">
+                      Target Job Role
+                    </label>
+                    <input
+                      type="text"
+                      value={targetRole}
+                      onChange={(e) => setTargetRole(e.target.value)}
+                      placeholder="e.g. Frontend Developer, Data Analyst, QA Engineer"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleImproveResume}
+                    disabled={improving || !targetRole.trim()}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {improving ? (
+                      <><RefreshCw size={15} className="animate-spin" /> Improving Resume...</>
+                    ) : (
+                      <><Zap size={15} /> Improve Resume with AI</>
+                    )}
+                  </button>
+                </div>
+
+                {/* Score Comparison Panel */}
+                {atsComparison && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-5 shadow-inner space-y-4">
+                    <h4 className="text-sm font-bold text-emerald-800 flex items-center gap-2">
+                      <TrendingUp size={16} /> ATS Score Comparison
+                    </h4>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                      <div className="rounded-lg bg-white border border-slate-100 p-4 text-center">
+                        <p className="text-[10px] font-bold uppercase text-slate-400">Original ATS Score</p>
+                        <p className="mt-1 text-2xl font-black text-slate-500">{Math.round(atsComparison.original_ats_score)}%</p>
+                      </div>
+                      <div className="rounded-lg bg-white border border-slate-100 p-4 text-center">
+                        <p className="text-[10px] font-bold uppercase text-slate-400">Improved ATS Score</p>
+                        <p className="mt-1 text-2xl font-black text-emerald-600">{Math.round(atsComparison.ats_score_after_ai_improvement)}%</p>
+                      </div>
+                      <div className="rounded-lg bg-white border border-slate-100 p-4 text-center flex flex-col justify-center items-center">
+                        <p className="text-[10px] font-bold uppercase text-slate-400">Score Improvement</p>
+                        <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-sm font-black text-emerald-700">
+                          +{Math.round(atsComparison.score_difference)}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Suggestions and Structural Preview */}
+                {improvedResult && (
+                  <div className="space-y-6 pt-4 border-t border-slate-100">
+                    
+                    {/* Action buttons */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-slate-500">Proposal Action:</span>
+                        {improvedResult.status === "pending" ? (
+                          <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-bold text-amber-700">Draft Pending Approval</span>
+                        ) : (
+                          <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-bold text-emerald-700">Suggestions Accepted</span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        {improvedResult.status === "pending" && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={handleAcceptSuggestions}
+                              disabled={accepting}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white shadow transition hover:bg-emerald-700"
+                            >
+                              <CheckCircle2 size={13} /> {accepting ? "Accepting..." : "Accept Suggestions"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleRejectSuggestions}
+                              disabled={rejecting}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 border border-red-200 px-3.5 py-2 text-xs font-bold text-red-600 transition hover:bg-red-100"
+                            >
+                              <XCircle size={13} /> {rejecting ? "Discard" : "Reject"}
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleDownloadDraft}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
+                        >
+                          <Download size={13} /> Download Draft (.txt)
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Side-by-side or detailed tabs */}
+                    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                      
+                      {/* Left: Original resume reference and Suggestions */}
+                      <div className="space-y-4">
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide">Analysis &amp; Suggestions</h4>
+                        
+                        {/* Suggestions Details */}
+                        {improvedResult.ai_suggestions && (
+                          <div className="rounded-2xl border border-slate-200 p-5 bg-white space-y-4">
+                            <div>
+                              <h5 className="text-xs font-bold text-indigo-700 flex items-center gap-1"><CheckCircle2 size={13} /> Improvements Made</h5>
+                              <ul className="mt-2 space-y-1 text-xs text-slate-600 list-disc list-inside font-semibold">
+                                {safeArray(improvedResult.ai_suggestions.what_was_improved).map((item, i) => (
+                                  <li key={i}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                            
+                            <div>
+                              <h5 className="text-xs font-bold text-red-600 flex items-center gap-1"><AlertTriangle size={13} /> Identified Weak Areas</h5>
+                              <ul className="mt-2 space-y-1 text-xs text-slate-600 list-disc list-inside font-semibold">
+                                {safeArray(improvedResult.ai_suggestions.weak_areas).map((item, i) => (
+                                  <li key={i}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+
+                            <div>
+                              <h5 className="text-xs font-bold text-amber-600 flex items-center gap-1"><Star size={13} /> Recommended Keywords</h5>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {safeArray(improvedResult.ai_suggestions.missing_keywords).map((kw, i) => (
+                                  <span key={i} className="rounded bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-800">{kw}</span>
+                                ))}
+                              </div>
+                            </div>
+
+                            {improvedResult.ai_suggestions.ats_optimization_notes && (
+                              <div>
+                                <h5 className="text-xs font-bold text-slate-700">ATS Optimization Note</h5>
+                                <p className="mt-1 text-xs text-slate-500 font-semibold">{improvedResult.ai_suggestions.ats_optimization_notes}</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Collapsible Original Text Reference */}
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+                          <h5 className="text-xs font-bold text-slate-500">Original Profile Text Reference</h5>
+                          <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap text-[10px] font-mono text-slate-500 bg-white border border-slate-100 p-2.5 rounded">
+                            {improvedResult.original_resume_text}
+                          </pre>
+                        </div>
+                      </div>
+
+                      {/* Right: Beautiful Improved Resume Structure */}
+                      <div className="space-y-4">
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide">AI Improved Structured Resume Preview</h4>
+                        {improvedResult.improved_resume_text && (
+                          <div className="rounded-2xl border border-slate-300 bg-white p-6 shadow space-y-5 font-sans min-h-[500px]">
+                            {/* Resume Header */}
+                            <div className="text-center pb-4 border-b border-slate-100">
+                              <h3 className="text-lg font-black text-slate-900">{improvedResult.improved_resume_text.candidate_name}</h3>
+                              <p className="text-xs font-bold text-indigo-600 mt-0.5">{improvedResult.improved_resume_text.headline}</p>
+                              <p className="text-[10px] text-slate-400 mt-1.5 font-semibold">{improvedResult.improved_resume_text.contact}</p>
+                            </div>
+
+                            {/* Summary */}
+                            <div className="space-y-1.5">
+                              <h4 className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-0.5 uppercase tracking-wider">Professional Summary</h4>
+                              <p className="text-xs text-slate-600 leading-relaxed font-semibold">{improvedResult.improved_resume_text.summary}</p>
+                            </div>
+
+                            {/* Skills Grid */}
+                            <div className="space-y-2">
+                              <h4 className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-0.5 uppercase tracking-wider">Technical Skills</h4>
+                              <div className="grid grid-cols-1 gap-2 text-xs">
+                                {Object.entries(improvedResult.improved_resume_text.skills || {}).map(([key, list]) => (
+                                  list && list.length > 0 && (
+                                    <div key={key} className="flex flex-col sm:flex-row sm:items-start gap-1">
+                                      <span className="font-bold text-slate-800 capitalize min-w-[80px] shrink-0">{key}:</span>
+                                      <span className="text-slate-600 font-semibold">{list.join(", ")}</span>
+                                    </div>
+                                  )
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Projects */}
+                            {improvedResult.improved_resume_text.projects?.length > 0 && (
+                              <div className="space-y-3">
+                                <h4 className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-0.5 uppercase tracking-wider">Projects</h4>
+                                {improvedResult.improved_resume_text.projects.map((p, i) => (
+                                  <div key={i} className="space-y-1">
+                                    <div className="flex justify-between items-baseline">
+                                      <span className="text-xs font-black text-slate-800">{p.title}</span>
+                                      <span className="text-[10px] font-semibold text-slate-400">Tech: {p.tech_stack}</span>
+                                    </div>
+                                    <ul className="list-disc list-outside ml-4 text-[11px] text-slate-600 space-y-0.5 font-semibold leading-relaxed">
+                                      {p.description?.map((bullet, j) => (
+                                        <li key={j}>{bullet}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Experience */}
+                            {improvedResult.improved_resume_text.experience?.length > 0 && (
+                              <div className="space-y-3">
+                                <h4 className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-0.5 uppercase tracking-wider">Experience &amp; Training</h4>
+                                {improvedResult.improved_resume_text.experience.map((exp, i) => (
+                                  <div key={i} className="space-y-1">
+                                    <div className="flex justify-between items-baseline">
+                                      <span className="text-xs font-black text-slate-800">{exp.job_title}</span>
+                                      <span className="text-[10px] font-semibold text-slate-400">{exp.company_name}</span>
+                                    </div>
+                                    <ul className="list-disc list-outside ml-4 text-[11px] text-slate-600 space-y-0.5 font-semibold leading-relaxed">
+                                      {exp.wording?.map((bullet, j) => (
+                                        <li key={j}>{bullet}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Education */}
+                            {improvedResult.improved_resume_text.education?.length > 0 && (
+                              <div className="space-y-2">
+                                <h4 className="text-xs font-bold text-slate-900 border-b border-slate-100 pb-0.5 uppercase tracking-wider">Education</h4>
+                                {improvedResult.improved_resume_text.education.map((edu, i) => (
+                                  <div key={i} className="flex justify-between items-baseline text-[11px] text-slate-600 font-semibold">
+                                    <span><span className="font-bold text-slate-800">{edu.degree}</span> · {edu.institution}</span>
+                                    <span className="text-[10px] text-slate-400 font-semibold">{edu.year}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* Certifications & Additional Strengths */}
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 pt-2 border-t border-slate-100">
+                              {improvedResult.improved_resume_text.certifications?.length > 0 && (
+                                <div>
+                                  <h5 className="text-[10px] font-bold text-slate-900 uppercase">Certifications</h5>
+                                  <ul className="mt-1 list-disc list-inside text-[10px] text-slate-600 leading-relaxed font-semibold">
+                                    {improvedResult.improved_resume_text.certifications.map((c, i) => (
+                                      <li key={i}>{c}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              {improvedResult.improved_resume_text.additional_strengths?.length > 0 && (
+                                <div>
+                                  <h5 className="text-[10px] font-bold text-slate-900 uppercase">Additional Strengths</h5>
+                                  <ul className="mt-1 list-disc list-inside text-[10px] text-slate-600 leading-relaxed font-semibold">
+                                    {improvedResult.improved_resume_text.additional_strengths.map((s, i) => (
+                                      <li key={i}>{s}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

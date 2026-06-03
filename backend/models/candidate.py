@@ -38,6 +38,7 @@ class CandidateProfile(Base):
     applications = relationship("JobApplication", back_populates="candidate", cascade="all, delete-orphan")
     ats_results = relationship("ATSResult", back_populates="candidate_profile", cascade="all, delete-orphan")
     candidate_ats_results = relationship("CandidateATSResult", back_populates="candidate_profile", cascade="all, delete-orphan")
+    ai_improvements = relationship("CandidateAIImprovement", back_populates="candidate_profile", cascade="all, delete-orphan")
 
 
 class CandidateEducation(Base):

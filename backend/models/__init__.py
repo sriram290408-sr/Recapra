@@ -15,6 +15,7 @@ from models.interview import InterviewSchedule
 from models.notification import Notification
 from models.ats import ATSResult
 from models.candidate_ats import RoleJDTemplate, CandidateATSResult
+from models.candidate_improvement import CandidateAIImprovement
 
 __all__ = [
     "Base",
@@ -34,4 +35,5 @@ __all__ = [
     "ATSResult",
     "RoleJDTemplate",
     "CandidateATSResult",
+    "CandidateAIImprovement",
 ]
